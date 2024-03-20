@@ -38,6 +38,9 @@ importFrom("lavaan",
            "modificationIndices", "parTable", "parameterEstimates",
            "lavPredict", "standardizedSolution")
 
+importFrom("blavaan",
+           "blavaan", "bsem")
+
 importFrom("coda",
            "mcmc.list",
            "mcmc", "as.mcmc",
