@@ -14,6 +14,6 @@ importFrom("RcppParallel", "CxxFlags", "RcppParallelLibs")
 
 import(rstantools)
 
-export("bsam")
+export("bsam", "bsam_model")
 
 useDynLib(bsam, .registration = TRUE)
