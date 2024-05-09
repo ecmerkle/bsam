@@ -1,15 +1,16 @@
 ## BSAM: Bayesian Structural After Measurement
 ## uses a new Stan file, then uses blavaan for everything else
 
-bsam <- function(...) {
+bsam <- function(..., ngibbs = 50L) {
 
   dotdotdot <- list(...)
 
   if (!("mcmcextra" %in% names(dotdotdot))) {
-    mcmcextra <- list(dosam = TRUE)
+    mcmcextra <- list(dosam = TRUE, data = list(ngibbs = ngibbs, fullpsi_c = 0))
   } else {
     mcmcextra <- dotdotdot$mcmcextra
     mcmcextra$dosam <- TRUE
+    mcmcextra$data <- c(mcmcextra$data, list(ngibbs = ngibbs, fullpsi_c = 0L))
   }
 
   mc <- match.call()

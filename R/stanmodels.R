@@ -7,7 +7,7 @@ stanmodels <- c("stanmarg_bsam")
 Rcpp::loadModule("stan_fit4stanmarg_bsam_mod", what = TRUE)
 
 # instantiate each stanmodel object
-bsam_model <- sapply(stanmodels, function(model_name) {
+stanmodels <- sapply(stanmodels, function(model_name) {
   # create C++ code for stan model
   stan_file <- if(dir.exists("stan")) "stan" else file.path("inst", "stan")
   stan_file <- file.path(stan_file, paste0(model_name, ".stan"))
