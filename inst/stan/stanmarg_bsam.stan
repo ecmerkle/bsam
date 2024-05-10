@@ -1418,6 +1418,12 @@ generated quantities { // these matrices are saved in the output but do not figu
     gamma0[mm] = rep_vector(0, maxdim);
     Omega_inv[mm] = diag_matrix(gamma0[mm]);
 
+    if (Ndum[mm] > 0) {
+      for (j in 1:Ndum[mm]) {
+	Theta_sd_dum[g, dum_ov_idx[mm, j], dum_ov_idx[mm, j]] = pow(.0001, .5);
+      }
+    }
+    
     for (r in 1:m) {
       real askel = Alpha_skeleton[g, r, 1];
       if (is_inf(askel)) {
@@ -1466,11 +1472,6 @@ generated quantities { // these matrices are saved in the output but do not figu
       
       // sample lvs
       Psi0_inv = inverse_spd( quad_form_sym(Psi[g], IBinv') );
-      if (Ndum[mm] > 0) {
-	for (j in 1:Ndum[mm]) {
-	  Theta_sd_dum[g, dum_ov_idx[mm, j], dum_ov_idx[mm, j]] = pow(.0001, .5);
-	}
-      }
       Lamt_Thet_inv = Lambda[g]' * inverse_spd( quad_form_sym(Theta_r[g], Theta_sd_dum[g]) ); // mxp
       
       D = inverse_spd( Lamt_Thet_inv * Lambda[g] + Psi0_inv );
