@@ -1,10 +1,10 @@
-\name{bsem}
-\alias{bsem}
+\name{bsam}
+\alias{bsam}
 \title{Fit Structural Equation Models}
 \description{
 Fit a Structural Equation Model (SEM).}
 \usage{
-bsem(..., ngibbs = 50L)
+bsam(..., ngibbs = 50L)
 }
 \arguments{
 \item{...}{Default blavaan arguments.  See \code{\link{blavaan}}.}
@@ -16,7 +16,7 @@ bsem(..., ngibbs = 50L)
   estimation of a \code{blavaan} model.
   }
 \value{
-  An object of class \code{\linkS4class{blavaan}}, which inherits from \code{\linkS4class{lavaan}}.
+  An object of class \code{\linkS4class{blavaan}}, which inherits from \code{lavaan}.
 }
 \references{
 Edgar C. Merkle, Ellen Fitzsimmons, James Uanhoro, & Ben Goodrich (2021). Efficient Bayesian Structural Equation Modeling in Stan. Journal of Statistical
