@@ -273,7 +273,50 @@ functions { // you can use these in R following `rstan::expose_stan_functions("f
     if(is_nan(out) || out == positive_infinity()) out = negative_infinity();
 
     return out;
-  }  
+  }
+
+  real cond_density(real theta, real xc, array[] real parms, array[] real x_r, array[] int x_i) {
+    // parms: mu, sqrt(sigma), Lambda[,m], sqrt(psi), Tau[grpidx]
+    // x_i: nvar, nlevs, YXo[i,]
+    int nvar = x_i[1];
+    array[nvar] int nlevs = x_i[2:(nvar + 1)];
+    array[nvar] int YXo = x_i[(nvar + 2):(2*nvar + 1)];
+    vector[nvar] Mu = to_vector(parms[1:nvar]) + to_vector(parms[(2*nvar + 1):(3*nvar)]) .* theta;
+    vector[nvar] SDvec = to_vector(parms[(nvar + 1):(2*nvar)]);
+    vector[sum(nlevs) - nvar] Tau = to_vector(parms[(2*nvar + 1):(2*nvar + sum(nlevs) - nvar)]);
+    array[2] real runtau;
+    array[nvar] real probs;
+    real out;
+
+    for (i in 1:nvar) {
+      runtau = get_taus(Tau, i, YXo[i], nlevs);
+
+      probs[i] = normal_cdf(runtau[2] | parms[1], parms[2]) - normal_cdf(runtau[1] | parms[1], parms[2]);
+    }
+
+    out = sum(probs) * exp(normal_lpdf(theta | 0, parms[3]));
+
+    return out;
+  }
+
+  // obtain lower and upper taus based on observed ordinal data
+  array[] real get_taus(vector Tau, int varidx, int YXo, array[] int nlevs) {
+    array[2] real out;
+    int vecpos = YXo - 1;
+    if (varidx > 1) vecpos += sum(nlevs[1:(varidx - 1)]);
+
+    if (YXo == 1) {
+      out[1] = negative_infinity();
+      out[2] = Tau[(vecpos + 1)];
+    } else if (YXo == nlevs[varidx]) {
+      out[1] = Tau[vecpos];
+      out[2]= positive_infinity();
+    } else {
+      out[1] = Tau[vecpos];
+      out[2] = Tau[(vecpos + 1)];
+    }
+    return out;
+  }
 }
 data {
   // see https://books.google.com/books?id=9AC-s50RjacC&lpg=PP1&dq=LISREL&pg=PA2#v=onepage&q=LISREL&f=false
@@ -926,10 +969,6 @@ transformed parameters {
     tau_primn = to_vector(tau_mn);
   }
 
-  // NB nothing below this will be used for two level, because we need other tricks to
-  //    compute the likelihood
-  // continuous responses underlying ordinal data
-
   if (Ncont > 0) {
     for (patt in 1:Np) {
       for (i in startrow[patt]:endrow[patt]) {
@@ -991,7 +1030,27 @@ model { // N.B.: things declared in the model block do not get saved in the outp
       r1 = startrow[mm];
       r2 = endrow[mm];
 
-      if (!use_suff) {
+      if (ord) {
+	for (i in r1:r2) {
+	  for (qq in 1:m) {
+	    array[3*Nobs[mm] + 1 + sum(nlevs) - Nord] real x_r;
+	    array[1 + Nord + Nordobs[mm]] int x_i;
+	    
+	    x_r[1:Nobs[mm]] = to_array_1d(Mu[grpidx, obsidx[1:Nobs[mm]]]);
+	    x_r[(Nobs[mm] + 1):(2*Nobs[mm])]= to_array_1d(sqrt(diagonal(Sigma[grpidx, obsidx[1:Nobs[mm]], obsidx[1:Nobs[mm]]])));
+	    x_r[(2*Nobs[mm] + 1):(3*Nobs[mm])] = to_array_1d(Lambda_y[grpidx, obsidx[1:Nobs[mm]], qq]);
+	    x_r[3*Nobs[mm] + 1] = sqrt(Psi_tmp[grpidx, qq, qq]);
+	    x_r[(3*Nobs[mm] + 2):(3*Nobs[mm] + 1 + sum(nlevs) - Nord)] = to_array_1d(Tau[grpidx,, 1]);
+
+	    x_i[1] = Nordobs[mm];
+	    x_i[2:(Nord + 1)] = nlevs;
+	    x_i[(Nord + 2):(Nord + 1 + Nordobs[mm])] = YXo[i, 1:Nordobs[mm]];
+	    
+	    // use integrate_1d per factor; lambda_y_mn is a placeholder to match function signature
+	    target += log( integrate_1d(cond_density, negative_infinity(), positive_infinity(), x_r, lambda_y_mn, x_i) );
+	  }
+	}
+      } else if (!use_suff) {
 	target += multi_normal_lpdf(YXstar[r1:r2,1:Nobs[mm]] | Mu[grpidx, obsidx[1:Nobs[mm]]], Sigma[grpidx, obsidx[1:Nobs[mm]], obsidx[1:Nobs[mm]]]);
 
 	if (Nx[mm] > 0) {
