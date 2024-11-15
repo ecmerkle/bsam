@@ -281,9 +281,9 @@ functions { // you can use these in R following `rstan::expose_stan_functions("f
     int nvar = x_i[1];
     array[nvar] int nlevs = x_i[2:(nvar + 1)];
     array[nvar] int YXo = x_i[(nvar + 2):(2*nvar + 1)];
-    vector[nvar] Mu = to_vector(parms[1:nvar]) + to_vector(parms[(2*nvar + 1):(3*nvar)]) .* theta;
+    vector[nvar] Mu = to_vector(parms[1:nvar]) + to_vector(parms[(2*nvar + 1):(3*nvar)]) * theta;
     vector[nvar] SDvec = to_vector(parms[(nvar + 1):(2*nvar)]);
-    vector[sum(nlevs) - nvar] Tau = to_vector(parms[(2*nvar + 1):(2*nvar + sum(nlevs) - nvar)]);
+    vector[sum(nlevs) - nvar] Tau = to_vector(parms[(3*nvar + 2):(3*nvar + 1 + sum(nlevs) - nvar)]);
     array[2] real runtau;
     array[nvar] real probs;
     real out;
@@ -291,10 +291,10 @@ functions { // you can use these in R following `rstan::expose_stan_functions("f
     for (i in 1:nvar) {
       runtau = get_taus(Tau, i, YXo[i], nlevs);
 
-      probs[i] = normal_cdf(runtau[2] | parms[1], parms[2]) - normal_cdf(runtau[1] | parms[1], parms[2]);
+      probs[i] = Phi_approx((runtau[2] - Mu[i])/SDvec[i]) - Phi_approx((runtau[1] - Mu[i])/SDvec[i]);
     }
 
-    out = sum(probs) * exp(normal_lpdf(theta | 0, parms[3]));
+    out = exp(sum(log(probs)) + normal_lpdf(theta | 0, parms[3*nvar + 1]));
 
     return out;
   }
@@ -303,7 +303,7 @@ functions { // you can use these in R following `rstan::expose_stan_functions("f
   array[] real get_taus(vector Tau, int varidx, int YXo, array[] int nlevs) {
     array[2] real out;
     int vecpos = YXo - 1;
-    if (varidx > 1) vecpos += sum(nlevs[1:(varidx - 1)]);
+    if (varidx > 1) vecpos += sum(nlevs[1:(varidx - 1)]) - varidx;
 
     if (YXo == 1) {
       out[1] = negative_infinity();
@@ -500,6 +500,7 @@ data {
   array[Ng, len_w14] int<lower=0> v14;
   array[Ng, use_cov ? 1 : m + n + 1] int<lower=1> u14;
   array[sum(wg14), 3] int<lower=0> w14skel;
+  array[sum(wg14), 3] int<lower=0> alph_sign;
   int<lower=0> len_alph;
   array[len_alph] real alpha_mn;
   array[len_alph] real<lower=0> alpha_sd;
@@ -617,6 +618,7 @@ data {
   array[Ng, len_w14_c] int<lower=0> v14_c;
   array[Ng, m_c + 1] int<lower=1> u14_c;
   array[sum(wg14_c), 3] int<lower=0> w14skel_c;
+  array[sum(wg14_c), 3] int<lower=0> alph_sign_c;
   int<lower=0> len_alph_c;
   array[len_alph_c] real alpha_mn_c;
   array[len_alph_c] real<lower=0> alpha_sd_c;
@@ -1040,14 +1042,13 @@ model { // N.B.: things declared in the model block do not get saved in the outp
 	    x_r[(Nobs[mm] + 1):(2*Nobs[mm])]= to_array_1d(sqrt(diagonal(Sigma[grpidx, obsidx[1:Nobs[mm]], obsidx[1:Nobs[mm]]])));
 	    x_r[(2*Nobs[mm] + 1):(3*Nobs[mm])] = to_array_1d(Lambda_y[grpidx, obsidx[1:Nobs[mm]], qq]);
 	    x_r[3*Nobs[mm] + 1] = sqrt(Psi_tmp[grpidx, qq, qq]);
-	    x_r[(3*Nobs[mm] + 2):(3*Nobs[mm] + 1 + sum(nlevs) - Nord)] = to_array_1d(Tau[grpidx,, 1]);
-
+	    x_r[(3*Nobs[mm] + 2):(3*Nobs[mm] + 1 + sum(nlevs) - Nord)] = to_array_1d(Tau[grpidx,, 1]);//11:19
 	    x_i[1] = Nordobs[mm];
 	    x_i[2:(Nord + 1)] = nlevs;
 	    x_i[(Nord + 2):(Nord + 1 + Nordobs[mm])] = YXo[i, 1:Nordobs[mm]];
 	    
 	    // use integrate_1d per factor; lambda_y_mn is a placeholder to match function signature
-	    target += log( integrate_1d(cond_density, negative_infinity(), positive_infinity(), x_r, lambda_y_mn, x_i) );
+	    target += log( integrate_1d(cond_density, -10, 10, x_r, lambda_y_mn, x_i) );
 	  }
 	}
       } else if (!use_suff) {
@@ -1126,6 +1127,7 @@ generated quantities { // these matrices are saved in the output but do not figu
   // sign constraints and correlations
   vector[len_free[1]] ly_sign;
   vector[len_free[4]] bet_sign;
+  vector[len_free[14]] al_sign;
   array[Ng] matrix[m, m] PSmat;
   array[Ng] matrix[m, m] PS;
   vector[len_free[7]] Theta_cov;
@@ -1373,6 +1375,7 @@ generated quantities { // these matrices are saved in the output but do not figu
   
   // first deal with sign constraints:
   bet_sign = B_free; //sign_constrain_reg(B_free, len_free[4], b_sign, Lambda_y_free, Lambda_y_free);
+  al_sign = Alpha_free;
   
   for (g in 1:Ng) {
     if (m > 0) {
