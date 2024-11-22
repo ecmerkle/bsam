@@ -275,42 +275,51 @@ functions { // you can use these in R following `rstan::expose_stan_functions("f
     return out;
   }
 
-  real cond_density(real theta, real xc, array[] real parms, array[] real x_r, array[] int x_i) {
-    // parms: mu, sqrt(sigma), Lambda[,m], sqrt(psi), Tau[grpidx]
-    // x_i: nvar, nlevs, YXo[i,]
-    int nvar = x_i[1];
-    array[nvar] int nlevs = x_i[2:(nvar + 1)];
-    array[nvar] int YXo = x_i[(nvar + 2):(2*nvar + 1)];
-    vector[nvar] Mu = to_vector(parms[1:nvar]) + to_vector(parms[(2*nvar + 1):(3*nvar)]) * theta;
-    vector[nvar] SDvec = to_vector(parms[(nvar + 1):(2*nvar)]);
-    vector[sum(nlevs) - nvar] Tau = to_vector(parms[(3*nvar + 2):(3*nvar + 1 + sum(nlevs) - nvar)]);
-    array[2] real runtau;
+  real cond_density(real theta, vector Mu, vector SDvec, vector Lambda_y, vector Tau, array[] int nlevs, int nvar, array[] int YXo) {
+    vector[nvar] condmn;
     array[nvar] real probs;
     real out;
 
+    condmn = Mu + Lambda_y * theta;
+    
     for (i in 1:nvar) {
-      runtau = get_taus(Tau, i, YXo[i], nlevs);
+      array[2] real runtau = get_taus(Tau, i, condmn[i], SDvec[i], YXo[i], nlevs);
+      //array[2] real phis;
 
-      probs[i] = Phi_approx((runtau[2] - Mu[i])/SDvec[i]) - Phi_approx((runtau[1] - Mu[i])/SDvec[i]);
+      //phis[1] = normal_lcdf(runtau[1] | condmn[i], SDvec[i]);
+      //phis[2] = normal_lcdf(runtau[2] | condmn[i], SDvec[i]);
+
+      //logprobs[i] = phis[2] + log1m_exp(phis[1] - phis[2]);
+      probs[i] = bernoulli_lpmf(1 | Phi_approx((runtau[2] - condmn[i])/SDvec[i]) - Phi_approx((runtau[1] - condmn[i])/SDvec[i]));
+      if (is_inf(probs[i])) probs[i] = -20;
     }
 
-    out = exp(sum(log(probs)) + normal_lpdf(theta | 0, parms[3*nvar + 1]));
-
+    out = sum(probs);
+    
     return out;
   }
 
+  real trunc_normal_rng(real Mu, real SD, int varidx, array[] int nlevs, int YXo, vector Tau) {
+    array[2] real runtau = get_taus(Tau, varidx, Mu, SD, YXo, nlevs);
+    real p_lb = normal_cdf(runtau[1] | Mu, SD);
+    real p_ub = normal_cdf(runtau[2] | Mu, SD);
+    real u = uniform_rng(p_lb, p_ub);
+    real y = Mu + SD * inv_Phi(u);
+    return y;
+  }
+  
   // obtain lower and upper taus based on observed ordinal data
-  array[] real get_taus(vector Tau, int varidx, int YXo, array[] int nlevs) {
+  array[] real get_taus(vector Tau, int varidx, real Mu, real SD, int YXo, array[] int nlevs) {
     array[2] real out;
     int vecpos = YXo - 1;
-    if (varidx > 1) vecpos += sum(nlevs[1:(varidx - 1)]) - varidx;
+    if (varidx > 1) vecpos += sum(nlevs[1:(varidx - 1)]) - varidx + 1;
 
     if (YXo == 1) {
-      out[1] = negative_infinity();
+      out[1] = -30*SD + Mu;
       out[2] = Tau[(vecpos + 1)];
     } else if (YXo == nlevs[varidx]) {
       out[1] = Tau[vecpos];
-      out[2]= positive_infinity();
+      out[2]= 30*SD + Mu;
     } else {
       out[1] = Tau[vecpos];
       out[2] = Tau[(vecpos + 1)];
@@ -368,6 +377,10 @@ data {
   array[Np] int<lower=0> Ndum_x; // number of eXo dummy ovs/lvx
   array[Np, p] int<lower=1> dum_ov_x_idx; // index of eXo dummy ovs/lvs
   array[Np, m] int<lower=1> dum_lv_x_idx;
+
+  int ngh;
+  vector[ngh] ghnode;
+  vector[ngh] ghwt;  
   
   array[sum(nclus[,2])] int<lower=1> cluster_size; // number of obs per cluster
   array[Ng] int<lower=1> ncluster_sizes; // number of unique cluster sizes
@@ -847,7 +860,7 @@ parameters {
   vector<lower=0>[len_free[5]] Theta_sd_free;
   vector<lower=-1,upper=1>[len_free[7]] Theta_r_free; // to use beta prior
   vector[len_free[13]] Nu_free;
-  vector[len_free[9]] Psi_sd_tmp;
+  vector<lower=0>[len_free[9]] Psi_sd_tmp;
   vector[len_free[15]] Tau_ufree;
 }
 transformed parameters {
@@ -861,7 +874,7 @@ transformed parameters {
   array[Ng] matrix[sum(nlevs) - Nord, 1] Tau_un;
   array[Ng] matrix[sum(nlevs) - Nord, 1] Tau;
   vector[len_free[15]] Tau_free;
-  real tau_jacobian;
+  //real tau_jacobian;
   
   vector[len_free[1]] lambda_y_primn;
   vector[len_free[13]] nu_primn;
@@ -876,7 +889,6 @@ transformed parameters {
   array[Np] matrix[p + q + 1, p + q + 1] Sigmainv;  // for updating S^-1 by missing data pattern
 
   array[Ntot] vector[p + q] YXstar;
-  array[Ntot] vector[Nord] YXostar; // ordinal data
 
   for (g in 1:Ng) {
     // model matrices
@@ -921,7 +933,7 @@ transformed parameters {
   if (ord) {
     int opos = 1;
     int ofreepos = 1;
-    tau_jacobian = 0;
+    //tau_jacobian = 0;
     for (g in 1:Ng) {
       int vecpos = 1;
       Tau_un[g] = fill_matrix(Tau_ufree, Tau_skeleton[g], w15skel, g_start15[g,1], g_start15[g,2]);
@@ -1035,20 +1047,15 @@ model { // N.B.: things declared in the model block do not get saved in the outp
       if (ord) {
 	for (i in r1:r2) {
 	  for (qq in 1:m) {
-	    array[3*Nobs[mm] + 1 + sum(nlevs) - Nord] real x_r;
-	    array[1 + Nord + Nordobs[mm]] int x_i;
-	    
-	    x_r[1:Nobs[mm]] = to_array_1d(Mu[grpidx, obsidx[1:Nobs[mm]]]);
-	    x_r[(Nobs[mm] + 1):(2*Nobs[mm])]= to_array_1d(sqrt(diagonal(Sigma[grpidx, obsidx[1:Nobs[mm]], obsidx[1:Nobs[mm]]])));
-	    x_r[(2*Nobs[mm] + 1):(3*Nobs[mm])] = to_array_1d(Lambda_y[grpidx, obsidx[1:Nobs[mm]], qq]);
-	    x_r[3*Nobs[mm] + 1] = sqrt(Psi_tmp[grpidx, qq, qq]);
-	    x_r[(3*Nobs[mm] + 2):(3*Nobs[mm] + 1 + sum(nlevs) - Nord)] = to_array_1d(Tau[grpidx,, 1]);//11:19
-	    x_i[1] = Nordobs[mm];
-	    x_i[2:(Nord + 1)] = nlevs;
-	    x_i[(Nord + 2):(Nord + 1 + Nordobs[mm])] = YXo[i, 1:Nordobs[mm]];
-	    
-	    // use integrate_1d per factor; lambda_y_mn is a placeholder to match function signature
-	    target += log( integrate_1d(cond_density, -10, 10, x_r, lambda_y_mn, x_i) );
+	    vector[ngh] marglik = log(ghwt);
+	    for (gg in 1:ngh) {
+	      marglik[gg] += cond_density(ghnode[gg] * sqrt(Psi_tmp[grpidx, qq, qq]), // + Alpha[grpidx, m, 1],
+					  Mu[grpidx, obsidx[1:Nobs[mm]]],
+					  diagonal(Theta_sd[grpidx, obsidx[1:Nobs[mm]], obsidx[1:Nobs[mm]]]),
+					  Lambda_y[grpidx, obsidx[1:Nobs[mm]], qq],
+					  Tau[grpidx,, 1], nlevs, Nordobs[mm], YXo[i, 1:Nordobs[mm]]);
+	    }
+	    target += log_sum_exp(marglik);
 	  }
 	}
       } else if (!use_suff) {
@@ -1065,9 +1072,6 @@ model { // N.B.: things declared in the model block do not get saved in the outp
 	  target += -multi_normal_suff(YXbarstar[mm, xdatidx[1:Nx[mm]]], Sstar[mm, xdatidx[1:Nx[mm]], xdatidx[1:Nx[mm]]], Mu[grpidx, xidx[1:Nx[mm]]], sig_inv_update(Sigmainv[grpidx], xidx, Nx[mm], p + q, logdetSigma_grp[grpidx]), r2 - r1 + 1);
 	}
       }
-    }
-    if (ord) {
-      target += tau_jacobian;
     }
   }
   
@@ -1119,7 +1123,8 @@ generated quantities { // these matrices are saved in the output but do not figu
   vector[len_free[14]] alpha_primn;
 
   array[Ntot] vector[m] eta;
-
+  array[Ntot] vector[p + q] YXstar_gibbs;
+  
   // intermediate computations for gibbs sampler
   array[Np] vector[maxdim] gamma0;
   array[Np] matrix[maxdim, maxdim] Omega_inv;
@@ -1201,6 +1206,11 @@ generated quantities { // these matrices are saved in the output but do not figu
     Psi[g] = quad_form_sym(Psi_r[g], Psi_sd[g]);
   }
 
+  YXstar_gibbs = YXstar;
+  for (i in 1:Ntot) {
+    eta[i] = rep_vector(0, m);
+  }
+
   // arrange prior info
   for (mm in 1:Np) {
     int pidx = 1;
@@ -1235,7 +1245,7 @@ generated quantities { // these matrices are saved in the output but do not figu
   
   for (i in 1:ngibbs) {
     for (mm in 1:Np) {
-      array[p + q] int obsidx;
+      array[p + q] int obsidx = Obsvar[mm,];
       array[p + q] int xidx;
       array[p + q] int xdatidx;
       matrix[m, m] IBinv;
@@ -1273,10 +1283,16 @@ generated quantities { // these matrices are saved in the output but do not figu
       d = to_vector(Psi0_inv * IBinv * Alpha[g]);
 
       for (ridx in r1:r2) {
-	eta[ridx] = multi_normal_cholesky_rng(D * (d + Lamt_Thet_inv * (YX[ridx] - to_vector(Nu[g]))), Dchol);
+	// FIXME cannot handle combinations of ordinal and continuous
+	if (ord) {
+	  for (j in 1:Nord) {
+	    YXstar_gibbs[ridx, obsidx[j]] = trunc_normal_rng(Nu[g, obsidx[j], 1] + Lambda[g, obsidx[j]] * eta[ridx], Theta_sd_dum[g, obsidx[j], obsidx[j]], obsidx[j], nlevs, YXo[ridx, obsidx[j]], Tau[g,,1]);
+	  }
+	}
+	eta[ridx] = multi_normal_cholesky_rng(D * (d + Lamt_Thet_inv * (YXstar_gibbs[ridx] - to_vector(Nu[g]))), Dchol);
 
 	if (Ndum[mm] > 0) {
-	  eta[ridx, dum_lv_idx[mm, 1:Ndum[mm]]] = YX[ridx, dum_ov_idx[mm, 1:Ndum[mm]]];
+	  eta[ridx, dum_lv_idx[mm, 1:Ndum[mm]]] = YXstar[ridx, dum_ov_idx[mm, 1:Ndum[mm]]];
 	}
       }
 	
